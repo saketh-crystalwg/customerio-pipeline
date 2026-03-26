@@ -37,9 +37,9 @@ US_BASE = 'https://api.customer.io/v1'
 SCHEMA = 'customerio'
 
 WORKSPACES = {
-    'sd':  os.getenv('CIO_API_KEY_SD'),
-    'bf':  os.getenv('CIO_API_KEY_BF'),
-    'bld': os.getenv('CIO_API_KEY_BLD'),
+    'sd':  'fae2fb66dcbee0e21094ccfae8a76261',
+    'bf':  '5823d496e21ea766668cedb892258152',
+    'bld': '9f4e1b54aaf60870312ca6434fefc9d8',
 }
 
 
