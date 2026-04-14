@@ -16,6 +16,8 @@ import os
 import time
 from datetime import datetime
 
+from slack_notif import send_notification
+
 import pandas as pd
 import requests
 from dotenv import load_dotenv
@@ -480,6 +482,7 @@ ENTITIES = [
 def run():
     log.info('══════ Customer.io pipeline started ══════')
     start_time = time.time()
+    errors = []
 
     for ws, api_key in WORKSPACES.items():
         if not api_key:
@@ -506,9 +509,13 @@ def run():
                     fetched_newsletters = raw
             except requests.HTTPError as e:
                 body = e.response.text if e.response is not None else ''
-                log.error(f'  HTTP error for {name} [{ws}]: {e} — {body}')
+                msg = f'HTTP error for {name} [{ws}]: {e} — {body}'
+                log.error(f'  {msg}')
+                errors.append(msg)
             except Exception as e:
-                log.error(f'  Unexpected error for {name} [{ws}]: {e}', exc_info=True)
+                msg = f'Unexpected error for {name} [{ws}]: {e}'
+                log.error(f'  {msg}', exc_info=True)
+                errors.append(msg)
 
         # Campaign metrics — incremental upsert (last 30 days, catches late opens/clicks)
         try:
@@ -516,7 +523,9 @@ def run():
             log.info(f'  Fetched {len(metrics_raw):,} campaign metric rows')
             upsert_metrics(metrics_raw, f'campaign_metrics_{ws}', ['campaign_id', 'metric_date'])
         except Exception as e:
-            log.error(f'  Unexpected error for campaign_metrics [{ws}]: {e}', exc_info=True)
+            msg = f'Unexpected error for campaign_metrics [{ws}]: {e}'
+            log.error(f'  {msg}', exc_info=True)
+            errors.append(msg)
 
         # Newsletter metrics — incremental upsert (last 30 days)
         try:
@@ -524,7 +533,9 @@ def run():
             log.info(f'  Fetched {len(nl_metrics_raw):,} newsletter metric rows')
             upsert_metrics(nl_metrics_raw, f'newsletter_metrics_{ws}', ['newsletter_id', 'metric_date'])
         except Exception as e:
-            log.error(f'  Unexpected error for newsletter_metrics [{ws}]: {e}', exc_info=True)
+            msg = f'Unexpected error for newsletter_metrics [{ws}]: {e}'
+            log.error(f'  {msg}', exc_info=True)
+            errors.append(msg)
 
         # Messages — incremental: only fetch since last run's max sent_at
         try:
@@ -537,10 +548,25 @@ def run():
             msg_rows = fetch_messages(client, fetched_campaigns, fetched_newsletters, since_ts=watermark)
             upsert_messages(msg_rows, msg_table)
         except Exception as e:
-            log.error(f'  Unexpected error for messages [{ws}]: {e}', exc_info=True)
+            msg = f'Unexpected error for messages [{ws}]: {e}'
+            log.error(f'  {msg}', exc_info=True)
+            errors.append(msg)
 
     elapsed = time.time() - start_time
     log.info(f'══════ Pipeline complete in {elapsed:.1f}s ══════')
+
+    if errors:
+        send_notification(
+            title='❌ CustomerIO Pipeline (SD/BF/BLD) — Errors',
+            message='\n'.join(errors),
+            color='#ff0000'
+        )
+    else:
+        send_notification(
+            title='✅ CustomerIO Pipeline (SD/BF/BLD) — Complete',
+            message=f'All workspaces loaded successfully in {elapsed:.1f}s',
+            color='#36a64f'
+        )
 
 
 if __name__ == '__main__':
