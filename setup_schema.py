@@ -210,6 +210,62 @@ CREATE TABLE IF NOT EXISTS customerio.campaign_metrics_bld (
 );
 
 -- ─────────────────────────────────────────
+-- MESSAGES — add newsletter columns if not present
+-- ─────────────────────────────────────────
+ALTER TABLE customerio.messages_sd  ADD COLUMN IF NOT EXISTS newsletter_id   INTEGER;
+ALTER TABLE customerio.messages_sd  ADD COLUMN IF NOT EXISTS newsletter_name TEXT;
+ALTER TABLE customerio.messages_bf  ADD COLUMN IF NOT EXISTS newsletter_id   INTEGER;
+ALTER TABLE customerio.messages_bf  ADD COLUMN IF NOT EXISTS newsletter_name TEXT;
+ALTER TABLE customerio.messages_bld ADD COLUMN IF NOT EXISTS newsletter_id   INTEGER;
+ALTER TABLE customerio.messages_bld ADD COLUMN IF NOT EXISTS newsletter_name TEXT;
+
+-- ─────────────────────────────────────────
+-- NEWSLETTER METRICS
+-- ─────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS customerio.newsletter_metrics_sd (
+    newsletter_id   INTEGER,
+    newsletter_name TEXT,
+    metric_date     DATE,
+    sent            INTEGER DEFAULT 0,
+    delivered       INTEGER DEFAULT 0,
+    opened          INTEGER DEFAULT 0,
+    clicked         INTEGER DEFAULT 0,
+    bounced         INTEGER DEFAULT 0,
+    unsubscribed    INTEGER DEFAULT 0,
+    converted       INTEGER DEFAULT 0,
+    workspace       TEXT DEFAULT 'sd',
+    PRIMARY KEY (newsletter_id, metric_date)
+);
+CREATE TABLE IF NOT EXISTS customerio.newsletter_metrics_bf (
+    newsletter_id   INTEGER,
+    newsletter_name TEXT,
+    metric_date     DATE,
+    sent            INTEGER DEFAULT 0,
+    delivered       INTEGER DEFAULT 0,
+    opened          INTEGER DEFAULT 0,
+    clicked         INTEGER DEFAULT 0,
+    bounced         INTEGER DEFAULT 0,
+    unsubscribed    INTEGER DEFAULT 0,
+    converted       INTEGER DEFAULT 0,
+    workspace       TEXT DEFAULT 'bf',
+    PRIMARY KEY (newsletter_id, metric_date)
+);
+CREATE TABLE IF NOT EXISTS customerio.newsletter_metrics_bld (
+    newsletter_id   INTEGER,
+    newsletter_name TEXT,
+    metric_date     DATE,
+    sent            INTEGER DEFAULT 0,
+    delivered       INTEGER DEFAULT 0,
+    opened          INTEGER DEFAULT 0,
+    clicked         INTEGER DEFAULT 0,
+    bounced         INTEGER DEFAULT 0,
+    unsubscribed    INTEGER DEFAULT 0,
+    converted       INTEGER DEFAULT 0,
+    workspace       TEXT DEFAULT 'bld',
+    PRIMARY KEY (newsletter_id, metric_date)
+);
+
+-- ─────────────────────────────────────────
 -- COMBINED VIEWS
 -- ─────────────────────────────────────────
 CREATE OR REPLACE VIEW customerio.v_customers AS
@@ -253,6 +309,13 @@ CREATE OR REPLACE VIEW customerio.v_messages AS
     SELECT * FROM customerio.messages_bf
     UNION ALL
     SELECT * FROM customerio.messages_bld;
+
+CREATE OR REPLACE VIEW customerio.v_newsletter_metrics AS
+    SELECT * FROM customerio.newsletter_metrics_sd
+    UNION ALL
+    SELECT * FROM customerio.newsletter_metrics_bf
+    UNION ALL
+    SELECT * FROM customerio.newsletter_metrics_bld;
 """
 
 

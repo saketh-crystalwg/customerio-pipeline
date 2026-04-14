@@ -178,42 +178,59 @@ def fetch_newsletters(client):
     return data.get('newsletters', [])
 
 
-def fetch_campaign_metrics(client, campaigns: list) -> list:
-    """
-    For each campaign fetch daily metrics for the last 30 days.
-    GET /v1/campaigns/{id}/metrics?period=days&steps=30
-    Response: {"start": "...", "metric": {"series": {"sent": [...], "opened": [...], ...}}}
-    Each array has one value per day starting from `start`.
-    """
+def _fetch_metrics(client, endpoint: str, id_field: str, name_field: str,
+                   entity_id, entity_name: str, steps: int) -> list:
+    """Generic daily metrics fetcher for campaigns and newsletters."""
     from datetime import timedelta
+    data = client.get(endpoint, params={'period': 'days', 'steps': steps})
+    start_str = data.get('start', '')[:10]
+    series = data.get('metric', {}).get('series', {})
+    if not series or not start_str:
+        return []
+    start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
+    n = len(series.get('sent', []))
+    return [
+        {
+            id_field:    entity_id,
+            name_field:  entity_name,
+            'metric_date':   start_date + timedelta(days=i),
+            'sent':          series.get('sent',         [0]*n)[i],
+            'delivered':     series.get('delivered',    [0]*n)[i],
+            'opened':        series.get('opened',       [0]*n)[i],
+            'clicked':       series.get('clicked',      [0]*n)[i],
+            'bounced':       series.get('bounced',      [0]*n)[i],
+            'unsubscribed':  series.get('unsubscribed', [0]*n)[i],
+            'converted':     series.get('converted',    [0]*n)[i],
+        }
+        for i in range(n)
+    ]
+
+
+def fetch_campaign_metrics(client, campaigns: list, steps: int = 30) -> list:
+    """GET /v1/campaigns/{id}/metrics — daily metrics, last `steps` days."""
     rows = []
-    for campaign in campaigns:
-        cid = campaign.get('id')
-        cname = campaign.get('name', '')
+    for c in campaigns:
+        cid, cname = c.get('id'), c.get('name', '')
         try:
-            data = client.get(f'/campaigns/{cid}/metrics', params={'period': 'days', 'steps': 30})
-            start_str = data.get('start', '')[:10]  # "2026-03-22 ..." → "2026-03-22"
-            series = data.get('metric', {}).get('series', {})
-            if not series or not start_str:
-                continue
-            start_date = datetime.strptime(start_str, '%Y-%m-%d').date()
-            n = len(series.get('sent', []))
-            for i in range(n):
-                rows.append({
-                    'campaign_id':   cid,
-                    'campaign_name': cname,
-                    'metric_date':   start_date + timedelta(days=i),
-                    'sent':          series.get('sent',         [0]*n)[i],
-                    'delivered':     series.get('delivered',    [0]*n)[i],
-                    'opened':        series.get('opened',       [0]*n)[i],
-                    'clicked':       series.get('clicked',      [0]*n)[i],
-                    'bounced':       series.get('bounced',      [0]*n)[i],
-                    'unsubscribed':  series.get('unsubscribed', [0]*n)[i],
-                    'converted':     series.get('converted',    [0]*n)[i],
-                })
+            rows.extend(_fetch_metrics(client, f'/campaigns/{cid}/metrics',
+                                       'campaign_id', 'campaign_name', cid, cname, steps))
             time.sleep(0.15)
         except Exception as e:
             log.warning(f'  Could not fetch metrics for campaign {cid} ({cname}): {e}')
+    return rows
+
+
+def fetch_newsletter_metrics(client, newsletters: list, steps: int = 30) -> list:
+    """GET /v1/newsletters/{id}/metrics — daily metrics, last `steps` days."""
+    rows = []
+    for n in newsletters:
+        nid, nname = n.get('id'), n.get('name', '')
+        try:
+            rows.extend(_fetch_metrics(client, f'/newsletters/{nid}/metrics',
+                                       'newsletter_id', 'newsletter_name', nid, nname, steps))
+            time.sleep(0.15)
+        except Exception as e:
+            log.warning(f'  Could not fetch metrics for newsletter {nid} ({nname}): {e}')
     return rows
 
 
@@ -251,17 +268,6 @@ def transform_customers(raw: list, workspace: str) -> pd.DataFrame:
         columns=['id', 'email', 'created_at', 'updated_at', 'attributes', 'workspace']
     )
 
-
-def transform_campaign_metrics(raw: list, workspace: str) -> pd.DataFrame:
-    if not raw:
-        return pd.DataFrame(columns=[
-            'campaign_id', 'campaign_name', 'metric_date',
-            'sent', 'delivered', 'opened', 'clicked',
-            'bounced', 'unsubscribed', 'converted', 'workspace'
-        ])
-    df = pd.DataFrame(raw)
-    df['workspace'] = workspace
-    return df
 
 
 def transform_segments(raw: list, workspace: str) -> pd.DataFrame:
@@ -353,14 +359,13 @@ def get_message_watermark(table: str) -> int:
     return int(ts)
 
 
-def fetch_messages(client, campaigns: list, since_ts: int) -> list:
+def fetch_messages(client, campaigns: list, newsletters: list, since_ts: int) -> list:
     """
-    Fetch all messages newer than since_ts in a single paginated stream
-    (no per-campaign filter — per-campaign filtering cuts off historical pages).
+    Fetch all messages (campaign + newsletter) newer than since_ts.
     Messages are returned newest-first; pagination stops at the watermark.
-    campaign_name is resolved from a local lookup built from the campaigns list.
     """
-    campaign_names = {c['id']: c.get('name', '') for c in campaigns}
+    campaign_names   = {c['id']: c.get('name', '') for c in campaigns}
+    newsletter_names = {n['id']: n.get('name', '') for n in newsletters}
     rows, cursor = [], None
 
     while True:
@@ -377,21 +382,24 @@ def fetch_messages(client, campaigns: list, since_ts: int) -> list:
                 stop = True
                 break
             cid = m.get('campaign_id')
-            if not cid:
-                continue  # skip transactional / non-campaign messages
+            nid = m.get('newsletter_id')
+            if not cid and not nid:
+                continue  # skip transactional messages
             metrics = m.get('metrics', {})
             rows.append({
-                'message_id':    m['id'],
-                'campaign_id':   cid,
-                'campaign_name': campaign_names.get(cid, ''),
-                'customer_id':   m.get('customer_id'),
-                'email':         m.get('customer_identifiers', {}).get('email'),
-                'subject':       m.get('subject'),
-                'sent_at':       _ts(metrics.get('sent')),
-                'delivered_at':  _ts(metrics.get('delivered')),
-                'opened_at':     _ts(metrics.get('opened')),
-                'clicked_at':    _ts(metrics.get('clicked')),
-                'bounced_at':    _ts(metrics.get('bounced')),
+                'message_id':      m['id'],
+                'campaign_id':     cid,
+                'campaign_name':   campaign_names.get(cid, '') if cid else None,
+                'newsletter_id':   nid,
+                'newsletter_name': newsletter_names.get(nid, '') if nid else None,
+                'customer_id':     m.get('customer_id'),
+                'email':           m.get('customer_identifiers', {}).get('email'),
+                'subject':         m.get('subject'),
+                'sent_at':         _ts(metrics.get('sent')),
+                'delivered_at':    _ts(metrics.get('delivered')),
+                'opened_at':       _ts(metrics.get('opened')),
+                'clicked_at':      _ts(metrics.get('clicked')),
+                'bounced_at':      _ts(metrics.get('bounced')),
             })
 
         cursor = data.get('next')
@@ -400,6 +408,21 @@ def fetch_messages(client, campaigns: list, since_ts: int) -> list:
         time.sleep(0.15)
 
     return rows
+
+
+def upsert_metrics(rows: list, table: str, pk_cols: list):
+    """Upsert metric rows — inserts new dates, updates counts for existing ones."""
+    if not rows:
+        log.info(f'  No metric rows for {SCHEMA}.{table}')
+        return
+    meta = MetaData()
+    tbl = Table(table, meta, schema=SCHEMA, autoload_with=engine)
+    stmt = pg_insert(tbl).values(rows)
+    update_cols = {c: stmt.excluded[c] for c in rows[0] if c not in pk_cols}
+    stmt = stmt.on_conflict_do_update(index_elements=pk_cols, set_=update_cols)
+    with engine.begin() as conn:
+        conn.execute(stmt)
+    log.info(f'  Upserted {len(rows):,} metric rows → {SCHEMA}.{table}')
 
 
 def upsert_messages(rows: list, table: str):
@@ -466,7 +489,8 @@ def run():
         log.info(f'── Workspace: {ws.upper()} ──')
 
         client = WorkspaceClient(api_key)
-        fetched_campaigns = []
+        fetched_campaigns   = []
+        fetched_newsletters = []
 
         for entity in ENTITIES:
             name = entity['name']
@@ -478,20 +502,29 @@ def run():
                 load(df, table, dtype=entity.get('dtype'))
                 if name == 'campaigns':
                     fetched_campaigns = raw
+                if name == 'newsletters':
+                    fetched_newsletters = raw
             except requests.HTTPError as e:
                 body = e.response.text if e.response is not None else ''
                 log.error(f'  HTTP error for {name} [{ws}]: {e} — {body}')
             except Exception as e:
                 log.error(f'  Unexpected error for {name} [{ws}]: {e}', exc_info=True)
 
-        # Campaign metrics (depends on campaigns being fetched first)
+        # Campaign metrics — incremental upsert (last 30 days, catches late opens/clicks)
         try:
-            metrics_raw = fetch_campaign_metrics(client, fetched_campaigns)
+            metrics_raw = fetch_campaign_metrics(client, fetched_campaigns, steps=30)
             log.info(f'  Fetched {len(metrics_raw):,} campaign metric rows')
-            df = transform_campaign_metrics(metrics_raw, ws)
-            load(df, f'campaign_metrics_{ws}')
+            upsert_metrics(metrics_raw, f'campaign_metrics_{ws}', ['campaign_id', 'metric_date'])
         except Exception as e:
             log.error(f'  Unexpected error for campaign_metrics [{ws}]: {e}', exc_info=True)
+
+        # Newsletter metrics — incremental upsert (last 30 days)
+        try:
+            nl_metrics_raw = fetch_newsletter_metrics(client, fetched_newsletters, steps=30)
+            log.info(f'  Fetched {len(nl_metrics_raw):,} newsletter metric rows')
+            upsert_metrics(nl_metrics_raw, f'newsletter_metrics_{ws}', ['newsletter_id', 'metric_date'])
+        except Exception as e:
+            log.error(f'  Unexpected error for newsletter_metrics [{ws}]: {e}', exc_info=True)
 
         # Messages — incremental: only fetch since last run's max sent_at
         try:
@@ -501,7 +534,7 @@ def run():
                 log.info(f'  Messages table empty — full backfill (this may take a while)...')
             else:
                 log.info(f'  Fetching messages since {datetime.utcfromtimestamp(watermark)} UTC')
-            msg_rows = fetch_messages(client, fetched_campaigns, since_ts=watermark)
+            msg_rows = fetch_messages(client, fetched_campaigns, fetched_newsletters, since_ts=watermark)
             upsert_messages(msg_rows, msg_table)
         except Exception as e:
             log.error(f'  Unexpected error for messages [{ws}]: {e}', exc_info=True)
