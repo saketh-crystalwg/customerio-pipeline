@@ -4,7 +4,7 @@ import os
 import sys
 
 def send_notification(title, message, color):
-    url = os.getenv('SLACK_WEBHOOK_URL')
+    url = "https://hooks.slack.com/services/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"
     if not url:
         return  # silently skip if not configured
 
